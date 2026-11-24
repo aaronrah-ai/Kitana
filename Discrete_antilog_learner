@@ -1,0 +1,166 @@
+from decimal import Decimal, getcontext
+
+getcontext().prec = 28
+
+class DiscreteAntilogLearner:
+    """
+    Custom ML Antilogarithm Algorithm built directly on your PDF's 
+    'Why This is a True Sum of Squares' collapse:
+        Sum_{k=1}^{x^(n-1)} x  =  x * x^(n-1)  =  x^n
+    Reconstructs x^n from any real logarithm exponent n using discrete 
+    summation ladders and 10th-root decimal scaling.
+    """
+    def __init__(self, base=10, root_iterations=35):
+        if base <= 1:
+            raise ValueError("Antilogarithm base x must be > 1")
+        self.base = Decimal(str(base))
+        self.root_iterations = root_iterations
+        self.scale_weight = Decimal('1')
+        self.bias_offset = Decimal('0')
+
+    def _discrete_nth_root(self, value, root_deg=10):
+        """
+        Computes the discrete 10th root of 'value' using iterative 
+        arithmetic convergence (no continuous log/exp functions).
+        """
+        val = Decimal(str(value))
+        if val == Decimal('1'):
+            return Decimal('1')
+        
+        guess = Decimal('1') + (val - Decimal('1')) / Decimal(root_deg)
+        deg = Decimal(root_deg)
+        
+        for _ in range(self.root_iterations):
+            # Discrete Newton step: x_{k+1} = ((deg - 1)*x_k + val / x_k^(deg-1)) / deg
+            power_term = guess ** (root_deg - 1)
+            guess = ((deg - Decimal('1')) * guess + (val / power_term)) / deg
+        return guess
+
+    def sum_of_squares_antilog(self, exponent_n):
+        """
+        Forward Discrete Ladder Engine (PDF Pages 1-2):
+        1. Splits exponent n into integer level (n_int) and decimal tail (n_frac).
+        2. Runs the sum-of-squares collapse: Sum_{k=1}^{x^(n_int - 1)} x = x^n_int.
+        3. Resolves fractional exponent digits via nested 10th-root scaling.
+        """
+        n_dec = Decimal(str(exponent_n))
+        is_negative = n_dec < 0
+        n_abs = abs(n_dec)
+
+        n_int = int(n_abs)
+        n_frac = n_abs - Decimal(n_int)
+
+        # --- STAGE 1: Integer Sum-of-Squares Collapse (x * x^(n-1) = x^n) ---
+        if n_int == 0:
+            upper_boundary = Decimal('0')
+            integer_power_val = Decimal('1')
+        elif n_int == 1:
+            upper_boundary = Decimal('1')
+            integer_power_val = self.base
+        else:
+            # Build x^(n_int - 1) iteratively via discrete multiplication
+            upper_boundary = Decimal('1')
+            for _ in range(n_int - 1):
+                upper_boundary *= self.base
+
+            # Sum x across the upper boundary x^(n_int - 1)
+            # (Uses exact block scaling when upper_boundary is huge to stay fast)
+            if upper_boundary <= 10000:
+                integer_power_val = Decimal('0')
+                for _ in range(int(upper_boundary)):
+                    integer_power_val += self.base
+            else:
+                integer_power_val = self.base * upper_boundary
+
+        # --- STAGE 2: Fractional Exponent Resolution via 10th-Root Ladders ---
+        fractional_multiplier = Decimal('1')
+        current_root_base = self.base
+        rem_str = f"{n_frac:.12f}".split('.')[1]
+
+        for digit_char in rem_str:
+            digit = int(digit_char)
+            current_root_base = self._discrete_nth_root(current_root_base, root_deg=10)
+            if digit > 0:
+                # Multiply discrete root packet 'digit' times
+                for _ in range(digit):
+                    fractional_multiplier *= current_root_base
+
+        # Combine integer sum-of-squares block with fractional scaling factor
+        reconstructed_val = integer_power_val * fractional_multiplier
+
+        if is_negative:
+            reconstructed_val = Decimal('1') / reconstructed_val
+
+        return {
+            "base_x": float(self.base),
+            "exponent_n": float(exponent_n),
+            "upper_boundary_x_n_minus_1": float(upper_boundary),
+            "integer_block_x_n": float(integer_power_val),
+            "antilog_result_Y": float(reconstructed_val)
+        }
+
+    def fit(self, X_exponents, y_targets):
+        """
+        Trains a linear calibration layer on top of the discrete antilog 
+        outputs (useful when modeling scaled exponential systems).
+        """
+        raw_antilogs = [
+            Decimal(str(self.sum_of_squares_antilog(n)["antilog_result_Y"]))
+            for n in X_exponents
+        ]
+        targets = [Decimal(str(y)) for y in y_targets]
+
+        m = Decimal(len(raw_antilogs))
+        mean_x = sum(raw_antilogs) / m
+        mean_y = sum(targets) / m
+
+        num = sum((xi - mean_x) * (yi - mean_y) for xi, yi in zip(raw_antilogs, targets))
+        den = sum((xi - mean_x) ** 2 for xi in raw_antilogs)
+
+        if den > 0:
+            self.scale_weight = num / den
+            self.bias_offset = mean_y - (self.scale_weight * mean_x)
+        else:
+            self.scale_weight = Decimal('1')
+            self.bias_offset = Decimal('0')
+
+    def predict(self, X_test_exponents):
+        """Predicts calibrated antilogarithm values (Y = x^n) for new exponents."""
+        results = []
+        for n in X_test_exponents:
+            step_data = self.sum_of_squares_antilog(n)
+            raw_y = Decimal(str(step_data["antilog_result_Y"]))
+            calibrated_y = (self.scale_weight * raw_y) + self.bias_offset
+            results.append({
+                "exponent_n": n,
+                "upper_boundary": step_data["upper_boundary_x_n_minus_1"],
+                "predicted_antilog_Y": float(calibrated_y)
+            })
+        return results
+
+
+if __name__ == "__main__":
+    # Example 1: Exact Sum-of-Squares Collapse (Base 4, n = 3 -> 4 * 4^2 = 64)
+    antilog_base4 = DiscreteAntilogLearner(base=4)
+    res_64 = antilog_base4.sum_of_squares_antilog(3)
+    print("=== Forward Sum-of-Squares Antilog (Base 4, n = 3) ===")
+    print(f"Upper Boundary (x^(n-1)): {res_64['upper_boundary_x_n_minus_1']}")
+    print(f"Collapsed Value (x^n):    {res_64['antilog_result_Y']}\n")
+
+    # Example 2: Base-10 ML Antilog Predictions (Recovering 41.5 and 10^7.70)
+    antilog_base10 = DiscreteAntilogLearner(base=10)
+    
+    # Train on exact integer powers
+    X_train_n = [1.0, 2.0, 3.0]
+    y_train_Y = [10.0, 100.0, 1000.0]
+    antilog_base10.fit(X_train_n, y_train_Y)
+
+    # Test with your Golden Ratio log (1.618048 -> 41.5) and slide n (7.70 -> ~50.1M)
+    test_exponents = [1.618048, 7.70, 9.0]
+    print("=== ML Antilogarithm Predictions (Base 10) ===")
+    for item in antilog_base10.predict(test_exponents):
+        print(
+            f"Exponent n={item['exponent_n']:<10} | "
+            f"Upper Boundary={item['upper_boundary']:<12.0f} | "
+            f"Predicted Antilog (10^n) = {item['predicted_antilog_Y']:.2f}"
+        )
