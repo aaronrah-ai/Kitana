@@ -1,0 +1,135 @@
+from decimal import Decimal, getcontext
+
+getcontext().prec = 28
+
+class DiscreteLogarithmLearner:
+    """
+    Custom ML Algorithm built on the Discrete Geometric Scaling Framework.
+    Reverses the sum-of-squares collapse (x^n -> x^(n-1)) via iterative 
+    discrete division to compute and learn base-x logarithms.
+    """
+    def __init__(self, base=10, decimal_precision=8):
+        if base <= 1:
+            raise ValueError("Logarithm base x must be > 1")
+        self.base = Decimal(str(base))
+        self.decimal_precision = decimal_precision
+        self.scale_weight = Decimal('1')
+        self.bias_offset = Decimal('0')
+
+    def extract_discrete_log_layers(self, target_val):
+        """
+        Refined Point A:
+        Given Y = x^n, divides by base x to extract the discrete differential 
+        (x^(n-1)), then peels layers until reaching x and 1, resolving any 
+        remaining decimal fraction via 10x dimensional scaling.
+        """
+        Y = Decimal(str(target_val))
+        if Y <= 0:
+            raise ValueError("Target value must be positive.")
+
+        # 1. Extract the discrete differential boundary: x^(n-1) = Y / x
+        discrete_differential = Y / self.base
+
+        # 2. Peel integer layers by dividing by x until remainder < x
+        current = Y
+        steps_to_x = 0
+        while current >= self.base:
+            current /= self.base
+            steps_to_x += 1
+
+        # steps_to_x equals exact integer n (since dividing x^n by x, n times = 1)
+        integer_exponent = Decimal(steps_to_x)
+        remainder = current  # Now 1 <= remainder < base
+
+        # 3. Resolve fractional exponent digits by scaling remainder^10
+        fractional_exponent = Decimal('0')
+        place_value = Decimal('0.1')
+        rem = remainder
+
+        for _ in range(self.decimal_precision):
+            if rem == Decimal('1'):
+                break
+            rem = rem ** 10
+            digit = 0
+            while rem >= self.base:
+                rem /= self.base
+                digit += 1
+            fractional_exponent += Decimal(digit) * place_value
+            place_value /= Decimal('10')
+
+        total_log_n = integer_exponent + fractional_exponent
+
+        return {
+            "x_base": float(self.base),
+            "Y_input": float(Y),
+            "differential_x_n_minus_1": float(discrete_differential),
+            "steps_to_reach_x": max(0, steps_to_x - 1),
+            "learned_exponent_n": float(total_log_n)
+        }
+
+    def fit(self, X_values, y_exponents):
+        """
+        Trains a linear calibration layer over the extracted discrete log 
+        features (useful when learning scaled or shifted logarithmic laws).
+        """
+        extracted = [
+            Decimal(str(self.extract_discrete_log_layers(x)["learned_exponent_n"]))
+            for x in X_values
+        ]
+        targets = [Decimal(str(y)) for y in y_exponents]
+
+        n_samples = Decimal(len(extracted))
+        mean_x = sum(extracted) / n_samples
+        mean_y = sum(targets) / n_samples
+
+        num = sum((xi - mean_x) * (yi - mean_y) for xi, yi in zip(extracted, targets))
+        den = sum((xi - mean_x) ** 2 for xi in extracted)
+
+        if den > 0:
+            self.scale_weight = num / den
+            self.bias_offset = mean_y - (self.scale_weight * mean_x)
+        else:
+            self.scale_weight = Decimal('1')
+            self.bias_offset = Decimal('0')
+
+    def predict(self, X_test):
+        """Predicts the calibrated logarithm n for new exponential inputs."""
+        predictions = []
+        for x in X_test:
+            layers = self.extract_discrete_log_layers(x)
+            raw_n = Decimal(str(layers["learned_exponent_n"]))
+            calibrated_n = (self.scale_weight * raw_n) + self.bias_offset
+            predictions.append({
+                "input_Y": x,
+                "differential_boundary": layers["differential_x_n_minus_1"],
+                "predicted_log_n": float(calibrated_n)
+            })
+        return predictions
+
+
+if __name__ == "__main__":
+    # Example 1: Exact Discrete Ladder Reversal (Base 4, x^n = 64 -> n = 3)
+    log_engine_base4 = DiscreteLogarithmLearner(base=4)
+    result_64 = log_engine_base4.extract_discrete_log_layers(64)
+    print("=== Discrete Layer Peeling (Base 4, Y = 64) ===")
+    print(f"Discrete Differential (x^(n-1)): {result_64['differential_x_n_minus_1']}")
+    print(f"Divisions to reach x (n - 1):    {result_64['steps_to_reach_x']}")
+    print(f"Solved Logarithm n:              {result_64['learned_exponent_n']}\n")
+
+    # Example 2: Training & Predicting Common Logarithms (Base 10)
+    log_model_base10 = DiscreteLogarithmLearner(base=10, decimal_precision=8)
+    
+    # Train on known powers and intermediate values
+    X_train = [10, 100, 1000, 1000000000]
+    y_train = [1.0, 2.0, 3.0, 9.0]
+    log_model_base10.fit(X_train, y_train)
+
+    # Predict logarithms for new inputs (including 41.5 and 10^7.7)
+    test_inputs = [41.5, 50118723.36, 1000000]
+    print("=== ML Logarithm Predictions (Base 10) ===")
+    for item in log_model_base10.predict(test_inputs):
+        print(
+            f"Input Y={item['input_Y']:<13} | "
+            f"Differential (Y/x)={item['differential_boundary']:<12.2f} | "
+            f"Predicted log10(Y) = {item['predicted_log_n']:.6f}"
+        )
